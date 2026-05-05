@@ -285,16 +285,7 @@ private:
                         tk.snapshot->release();
                         return (unsigned long long)0;
                     }
-                    std::vector<std::vector<unsigned int>> vec2D;
-                    unsigned int num = tk.snapshot->numRow;
-                    vec2D.reserve(num);
-                    for (unsigned int j = 0; j < num; ++j) {
-                        const RowSlice& rs = new_rows[j];
-                        vec2D.emplace_back(rs.get(), rs.get() + rs.length);
-                    }
-                    std::unordered_set<unsigned int> uset(tk.trav.buf, tk.trav.buf+tk.trav.len);
-                    
-                    tmp_count +=count_set(vec2D,uset);
+                    tmp_count += count_set_from_rows(new_rows.data(), num_v, tk.trav);
                     tk.trav.len--;
                 }
             }
@@ -313,8 +304,7 @@ private:
     
         for (uint32_t v = 0; v < num_v; ++v) {
             if(v == p->getcurrent_match_PID(index)){
-                auto data_ptr = make_array_shared(1);
-                data_ptr.get()[0]=current_match_RID;
+                auto data_ptr = make_single_shared(current_match_RID);
                 new_rows[v] = RowSlice(data_ptr, 1);
             } else {
                 if (!need_update[v]) {
@@ -430,8 +420,7 @@ private:
     
         for (uint32_t v = 0; v < num_v; ++v) {
             if(v == p->getcurrent_match_PID(index)){
-                auto data_ptr = make_array_shared(1);
-                data_ptr.get()[0]=current_match_RID;
+                auto data_ptr = make_single_shared(current_match_RID);
                 new_rows[v] = RowSlice(data_ptr, 1);
             } else {
                 if (!need_update[v]) {
@@ -636,34 +625,36 @@ private:
         return cur_count;
     }
 
-    bool eliminate(std::vector<unsigned> &PMR_remain, std::vector<unsigned> &isTraversed){
-        // cout<<"PMR_remain: ";
-        // for(int i = 0 ; i< PMR_remain.size();++i){
-        //   cout<<PMR_remain[i]<<" ";
-        // }
-        // cout<<endl;
-        // cout<<"isTraversed: "<<isTraversed[0]<<endl;
+    bool eliminate(std::vector<unsigned> &PMR_remain, const std::vector<unsigned> &isTraversed){
+        if(isTraversed.empty()) return false;
         bool flag = false;
-        int i,j;
-        // 求交
-        i = j = 0;//定位到2个有序向量的头部
-        while(i < PMR_remain.size() && j < isTraversed.size())
-        {
-            if(PMR_remain[i] == isTraversed[j]) //相等则为交集的元素  有交集则需要求并
-            {
-                PMR_remain.erase(PMR_remain.begin() + i);
-                flag = true; //有交集
-            }
-            else if(PMR_remain[i] < isTraversed[j])   //不相等时，指示较小元素额标记加一
-            {
-                i += 1;
-            }
-            else
-            {
-                j += 1;
+        size_t write = 0, i = 0, j = 0;
+        while (i < PMR_remain.size() && j < isTraversed.size()) {
+            if (PMR_remain[i] < isTraversed[j]) {
+                PMR_remain[write++] = PMR_remain[i++];
+            } else if (PMR_remain[i] > isTraversed[j]) {
+                ++j;
+            } else {
+                flag = true;
+                ++i; ++j;
             }
         }
+        while (i < PMR_remain.size()) PMR_remain[write++] = PMR_remain[i++];
+        PMR_remain.resize(write);
         return flag;
+    }
+
+    void eliminate_single(std::vector<unsigned> &row, unsigned val) {
+        size_t write = 0;
+        for (size_t i = 0; i < row.size(); ++i) {
+            if (row[i] != val) row[write++] = row[i];
+        }
+        row.resize(write);
+    }
+
+    void insert_sorted(std::vector<unsigned> &row, unsigned val) {
+        auto it = std::lower_bound(row.begin(), row.end(), val);
+        row.insert(it, val);
     }
 
     unsigned set_operation2(std::vector<std::vector<unsigned>> &PMR_copy){
@@ -839,6 +830,77 @@ private:
             }
         }
         return cur_count;
+    }
+
+    unsigned long long count_set_from_rows(const RowSlice* rows, unsigned int numRow, const TravSet& trav) {
+        int need_full = p->getneed_full();
+        if(need_full == 0) return 1;
+
+        vector<vector<unsigned>> PMR_remain(need_full);
+        for(int i = 0; i < need_full; ++i){
+            int ful = p->getfull(i);
+            const unsigned* data = rows[ful].get();
+            size_t len = rows[ful].length;
+            PMR_remain[i].assign(data, data + len);
+        }
+
+        vector<unsigned> isTraversed_v(trav.buf, trav.buf + trav.len);
+        sort(isTraversed_v.begin(), isTraversed_v.end());
+        for(int i = 0; i < need_full; ++i){
+            eliminate(PMR_remain[i], isTraversed_v);
+        }
+
+        if(need_full == 1) return PMR_remain[0].size();
+        else if(need_full == 2) return set_operation2(PMR_remain);
+        else if(need_full == 3) return set_operation3(PMR_remain);
+        else if(need_full == 4) return set_operation4(PMR_remain);
+        else if(need_full == 5) return count_set5(PMR_remain);
+        else return count_set_generic(PMR_remain);
+    }
+
+    unsigned long long count_set5(vector<vector<unsigned>>& PMR_remain) {
+        unsigned long long result = 0;
+        int min_size = PMR_remain[0].size();
+        int min_index = 0;
+        for(int i = 1; i < 5; ++i){
+            int sz = PMR_remain[i].size();
+            if(sz < min_size){ min_size = sz; min_index = i; }
+        }
+
+        unordered_set<unsigned> union_set;
+        vector<unsigned> full_v(std::move(PMR_remain[min_index]));
+        PMR_remain.erase(PMR_remain.begin() + min_index);
+        for(int i = 0; i < 4; ++i){
+            merge_un_set(full_v, PMR_remain[i], union_set);
+        }
+
+        unsigned four_line_count = 0;
+        if(union_set.size() < full_v.size()){
+            four_line_count = set_operation4(PMR_remain);
+        }
+
+        int full_v_size = full_v.size();
+        for(int i = 0; i < full_v_size; ++i){
+            unsigned rid = full_v[i];
+            if(union_set.count(rid) != 0){
+                for(int j = 0; j < 4; ++j){
+                    eliminate_single(PMR_remain[j], rid);
+                }
+                result += set_operation4(PMR_remain);
+                for(int j = 0; j < 4; ++j){
+                    insert_sorted(PMR_remain[j], rid);
+                }
+            }else{
+                result += four_line_count;
+            }
+        }
+        return result;
+    }
+
+    unsigned long long count_set_generic(vector<vector<unsigned>>& PMR_remain) {
+        int need_full = PMR_remain.size();
+        unordered_set<unsigned> set;
+        return full_permutation(PMR_remain, 0, set);
     }
 
     unsigned long long count_set(std::vector<std::vector<unsigned>> &PMR_copy, const unordered_set<R_ID>& isTraversed){

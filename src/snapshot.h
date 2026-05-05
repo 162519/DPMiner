@@ -39,6 +39,16 @@
 //     bool empty() const { return length == 0 || !data; }
 // };
 //template<typename T>
+struct SingleUnsigned {
+    unsigned int value;
+};
+
+inline std::shared_ptr<unsigned int> make_single_shared(unsigned int val) {
+    auto sp = std::make_shared<SingleUnsigned>();
+    sp->value = val;
+    return std::shared_ptr<unsigned int>(sp, &sp->value);
+}
+
 std::shared_ptr<unsigned int> make_array_shared(size_t n) {
     return std::shared_ptr<unsigned int>(new unsigned int[n], std::default_delete<unsigned int[]>());
 }
