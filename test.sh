@@ -1,0 +1,18 @@
+
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_wiki_vote/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no5v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no5e.txt >> test-data.txt
+echo "====================================webberkstan-7pc==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_web_berkStan/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7_pc.txt >> test-data.txt
+echo "====================================webberkstan-7pb==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_web_berkStan/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7_pb.txt >> test-data.txt
+echo "====================================webberkstan-6p==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_web_berkStan/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no6v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no6e.txt >> test-data.txt
+echo "====================================webberkstan-5p==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_web_berkStan/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no5v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no5e.txt >> test-data.txt
+echo "====================================orkut-5p==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_Orkut/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no5v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no5e.txt >> test-data.txt 
+echo "====================================orkut-6p==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_Orkut/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no6v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no6e.txt >> test-data.txt  
+echo "====================================orkut-7pb==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_Orkut/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7_pb.txt >> test-data.txt
+echo "====================================orkut-7pc==================================" >> test-data.txt
+mpiexec -np 3 -hostfile hosts.txt ./bin/miner hash /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/data/dataDec_Orkut/dataDec /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7v.txt /home/caohaoshuang/pjj/distributed_graph_query/PMiner_v1.1/test/no7_pc.txt >> test-data.txt
