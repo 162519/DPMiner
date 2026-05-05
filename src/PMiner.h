@@ -22,7 +22,7 @@ private:
 
     Pattern *p; // 查询图
     Degree *degree_P;
-    tbb::concurrent_vector<Degree_R> degree_R;
+    std::vector<Degree_R> degree_R;
     int ThreadNum;         //运行前待修改线程数量!!!!!!!!!!!!!!
     task_group tg;
     vector<unsigned> minMatchID_PMR; // 存储满足匹配模式图起始点真实图中的顶点id

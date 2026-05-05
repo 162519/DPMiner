@@ -54,7 +54,7 @@ private:
   tbb::concurrent_vector<unsigned> R_adjIndex;    //正邻接表索引  id1 id1邻接边在R_adj中的起始位置 id2 id2邻接边在R_adj中的起始位置
   tbb::concurrent_vector<unsigned> R_reverseAdjIndex;
 
-  tbb::concurrent_vector<Degree_R> degree_R;  // 顶点信息
+  std::vector<Degree_R> degree_R;
   //unsigned *degree_R;
   //unsigned sizeReverseAdj;    //逆邻接表大小
   unsigned sizeAdj;       //正邻接表大小
@@ -274,7 +274,7 @@ public:
     concurrent_vector<unsigned>().swap(R_reverse_adj);
     concurrent_vector<unsigned>().swap(R_adjIndex);
     concurrent_vector<unsigned>().swap(R_reverseAdjIndex);
-    concurrent_vector<Degree_R>().swap(degree_R);
+    std::vector<Degree_R>().swap(degree_R);
 
   }
 
@@ -359,7 +359,7 @@ public:
   unsigned getR_reverse_adj(unsigned i){
     return R_reverse_adj[i];
   }
-  tbb::concurrent_vector<Degree_R>& getdegree_R(){
+  std::vector<Degree_R>& getdegree_R(){
     return degree_R;
   }
 
