@@ -10,8 +10,7 @@
 #include "Degree.h"
 #include <fstream>
 #include <mutex>
-#include "tbb/concurrent_vector.h"
-#include <tbb/spin_mutex.h>
+#include <tbb/concurrent_hash_map.h>
 #include <immintrin.h>   // _mm_prefetch
 #include "PMiner.h"
 //#include "../util/global.h"
@@ -43,22 +42,17 @@ ofstream gout("out.log");
 // };
 class Graph {
 private:
-  int my_rank; // 当前图分区的节点id
-  //mutable tbb::spin_mutex update_mutex;  // 使用 TBB 的轻量级锁
-  unsigned num_v; //图顶点个数
+  int my_rank;
+  unsigned num_v;
   unsigned max_id; // 该节点的顶点最大id值
   unsigned num_e; //图边条数
   
-  tbb::concurrent_vector<unsigned> R_adj;         //正邻接表
-  tbb::concurrent_vector<unsigned> R_reverse_adj; //逆邻接表
-  tbb::concurrent_vector<unsigned> R_adjIndex;    //正邻接表索引  id1 id1邻接边在R_adj中的起始位置 id2 id2邻接边在R_adj中的起始位置
-  tbb::concurrent_vector<unsigned> R_reverseAdjIndex;
+  std::vector<unsigned> local_adj;        // 本地顶点的邻居数据（初始化后不变）
+  std::vector<unsigned> local_adjIndex;   // 本地顶点的邻居偏移（初始化后不变）
+  tbb::concurrent_hash_map<unsigned, std::vector<unsigned>> remote_adjIndex; // 远程顶点邻居数据
 
   std::vector<Degree_R> degree_R;
-  //unsigned *degree_R;
-  //unsigned sizeReverseAdj;    //逆邻接表大小
-  unsigned sizeAdj;       //正邻接表大小
-  static inline tbb::spin_mutex                  g_resize_mtx; // 仅扩容时用
+  unsigned sizeAdj;
   set<unsigned> vertex;  //当前顶点
   set<unsigned> localVer; //本地顶点
   tbb::concurrent_unordered_map<unsigned long long, vector<int>*> elabel; // 边标签   一边读入一边插入，保证有序性, string是边标签，标签也要按升序排列，便于和模式图标签对比
@@ -149,38 +143,21 @@ private:
     // 创建正邻接表，逆邻接表，正邻接表索引，逆邻接表索引
   void build_adj(string einputfile)
   {
-      // 初始化
-      
-      
-      //sizeAdj=0;
-      //R_reverse_adj.resize(num_e);
-      R_adjIndex.resize(max_id + 1);
-      //R_reverseAdjIndex.resize(max_id + 1);
-      unsigned *R_adjIndex_tail = new unsigned[max_id + 1];
-      //unsigned *R_reverseAdjIndex_tail = new unsigned[max_id + 1];
-      //memset(R_reverseAdjIndex_tail, 0, max_id + 1);
-      memset(R_adjIndex_tail, 0, max_id + 1);
-      R_adjIndex[0] = 0;
-      //R_reverseAdjIndex[0] = 0;
-      R_adjIndex_tail[0] = 0;
-      //R_reverseAdjIndex_tail[0] = 0;
-      // 构建正逆邻接表
+      local_adjIndex.resize(max_id + 1, 0);
+      unsigned *adj_tail = new unsigned[max_id + 1];
+      memset(adj_tail, 0, (max_id + 1) * sizeof(unsigned));
+      adj_tail[0] = 0;
       for (unsigned i: localVer)
       { 
-          R_adjIndex[i] = sizeAdj;
-          //R_reverseAdjIndex[i] = sizeReverseAdj;
-          R_adjIndex_tail[i] = R_adjIndex[i];
-          //R_reverseAdjIndex_tail[i] = R_reverseAdjIndex[i];
+          local_adjIndex[i] = sizeAdj;
+          adj_tail[i] = local_adjIndex[i];
           sizeAdj += degree_R[i].deg;
-          //sizeReverseAdj += degree_R[i].indeg;
-        
       }
-      R_adj.resize(sizeAdj);
-      //构建R_adj和R_reverse_adj
+      local_adj.resize(sizeAdj);
       ifstream efile(einputfile);
       string eline;
       assert(efile.is_open());
-      unsigned from = 0, to = 0; // 起点id，终点id
+      unsigned from = 0, to = 0;
       while (getline(efile, eline))
       {
           istringstream ss(eline);
@@ -188,24 +165,21 @@ private:
           ss >> to;
 
           if(from != to){
-            //只存储本地顶点的邻接数据
-            if(degree_R[from].nodeid == my_rank)
-              R_adj[R_adjIndex_tail[from]++] = to;
-            if(degree_R[to].nodeid == my_rank){
-              R_adj[R_adjIndex_tail[to]++] = from;
+            if(degree_R[from].nodeid == my_rank){
+              local_adj[adj_tail[from]] = to;
+              adj_tail[from]++;
             }
-            // R_adj[R_adjIndex_tail[from]++] = to;
-            // R_reverse_adj[R_reverseAdjIndex_tail[to]++] = from;
+            if(degree_R[to].nodeid == my_rank){
+              local_adj[adj_tail[to]] = from;
+              adj_tail[to]++;
+            }
           }
 
       }
-      cout<<11111111111111111<<endl;
+      delete[] adj_tail;
       for(unsigned i: localVer){
-      //ascendingSort(&R_adj.front()+R_adjIndex[i], &R_adj.front()+R_adjIndex[i+1]);
-      sort(R_adj.begin()+R_adjIndex[i], R_adj.begin()+R_adjIndex[i]+degree_R[i].deg);
+      sort(local_adj.begin()+local_adjIndex[i], local_adj.begin()+local_adjIndex[i]+degree_R[i].deg);
     }
-
-      // gout << "finish build adj." << endl;
   }
 // void ascendingSort(unsigned* start, unsigned* end) {
 //     // 使用比较函数对范围进行排序
@@ -269,11 +243,9 @@ public:
         delete degree_R[i].vlabel;
         degree_R[i].vlabel = nullptr;
     }
-    //释放内存空间
-    concurrent_vector<unsigned>().swap(R_adj);
-    concurrent_vector<unsigned>().swap(R_reverse_adj);
-    concurrent_vector<unsigned>().swap(R_adjIndex);
-    concurrent_vector<unsigned>().swap(R_reverseAdjIndex);
+    std::vector<unsigned>().swap(local_adj);
+    std::vector<unsigned>().swap(local_adjIndex);
+    remote_adjIndex.clear();
     std::vector<Degree_R>().swap(degree_R);
 
   }
@@ -339,26 +311,35 @@ public:
     return num_e;
   }
 
-  //获取正领接表
-  unsigned getR_adjIndex(unsigned i){
-    return R_adjIndex[i];
-  }
-  unsigned getR_reverseAdjIndex(unsigned i){
-    return R_reverseAdjIndex[i];
+  bool isLocal(unsigned vid) const {
+    return vid <= max_id && degree_R[vid].nodeid == my_rank;
   }
 
-  unsigned getR_adj(unsigned i){
-    //tbb::spin_mutex::scoped_lock lock(update_mutex);
-    assert(i < R_adj.size());
-    return R_adj[i];
-  }
-  unsigned* getR_adj_data(){
-    return  &R_adj[0];
+  bool getLocalNeighbors(unsigned vid, const unsigned*& data, unsigned& len) {
+    if (!isLocal(vid)) return false;
+    unsigned start = local_adjIndex[vid];
+    data = local_adj.data() + start;
+    len = degree_R[vid].deg;
+    return true;
   }
 
-  unsigned getR_reverse_adj(unsigned i){
-    return R_reverse_adj[i];
+  bool getRemoteNeighbors(unsigned vid, const unsigned*& data, unsigned& len) {
+    tbb::concurrent_hash_map<unsigned, std::vector<unsigned>>::const_accessor acc;
+    if (remote_adjIndex.find(acc, vid)) {
+        data = acc->second.data();
+        len = acc->second.size();
+        return true;
+    }
+    return false;
   }
+
+  bool getNeighbors(unsigned vid, const unsigned*& data, unsigned& len) {
+    if (isLocal(vid)) {
+        return getLocalNeighbors(vid, data, len);
+    }
+    return getRemoteNeighbors(vid, data, len);
+  }
+
   std::vector<Degree_R>& getdegree_R(){
     return degree_R;
   }
@@ -370,167 +351,18 @@ public:
   tbb::concurrent_unordered_map<unsigned long long, vector<int>*> getR_elabel(){
     return elabel;
   }
-  //更新正向边和邻居点
-  // bool update_forward(vector<vector<unsigned>> &vbuffer, vector<vector<unsigned>> &ebuffer, unsigned originID){
-  //   /*
-  //   vbuffer: 邻居节点的信息
-  //   ebuffer: 邻居边的信息
-  //   originID: 发出请求的顶点id
-  //   */
-
-  //   //打印vbuffer, ebuffer
-  //   // gout<<"vbuffer: ";
-  //   // for(int i = 0; i < vbuffer.size(); i++){
-  //   //     for(int j = 0; j < vbuffer[i].size(); j++){
-  //   //         gout<<vbuffer[i][j]<<" ";
-  //   //     }
-  //   //     gout<<endl;
-  //   // }
-  //   // gout<<"ebuffer: ";
-  //   // for(int i = 0; i < ebuffer.size(); i++){
-  //   //     for(int j = 0; j < ebuffer[i].size(); j++){
-  //   //         gout<<ebuffer[i][j]<<" ";
-  //   //     }
-  //   //     gout<<endl;
-  //   // }
-    
-  //   degree_R[originID].deg = 0;
-  //   //degree_R[originID].indeg = 0;
-  //   // update degree
-  //   //read v
-  //   for(int i = 0; i < vbuffer.size(); ++i){
-  //     unsigned vid = vbuffer[i][0];
-  //     if(degree_R[vid].nodeid == my_rank) continue;  //如果本地存在该顶点，就不更新
-  //     unsigned nodeid = vbuffer[i][1];
-  //     if(vbuffer[i].size() > 2){
-  //       vector<int> vlabel;
-  //       for(int j = 2; j < vbuffer[i].size(); ++j){
-  //         vlabel.push_back(vbuffer[i][j]);
-  //       }
-  //       degree_R[vid].vlabel = new vector<int>(vlabel);
-  //     }
-  //     degree_R[vid].nodeid = nodeid;
-  //     vertex.insert(vid);
-  //   }
-  //   //read e
-  //   for(int i = 0; i < ebuffer.size(); ++i){
-  //     unsigned long long from = ebuffer[i][0];
-  //     unsigned long long to = ebuffer[i][1];
-
-  //     if(from != to){
-  //       //只存储本地顶点的邻接数据
-  //       degree_R[from].deg++;  //from就是originID
-  //       if(degree_R[to].nodeid != my_rank){
-  //         degree_R[to].deg++;
-  //       }
-  //     }
-
-  //     if(ebuffer[i].size() <= 2 )  continue; //如果只有两个元素，说明没有边标签
-  //     from = (from + 1) << 32;
-  //     unsigned long long elabelid = from + to;
-  //     if(elabel.find(elabelid) != elabel.end()){
-  //       continue;
-  //     }
-  //     vector<int>* elabelvalue = new vector<int>();
-  //     for(int j = 2; j < ebuffer[i].size(); ++j){
-  //       elabelvalue->push_back(ebuffer[i][j]);
-  //     }
-  //     if(elabelvalue->size() > 0)
-  //       elabel[elabelid] = elabelvalue;
-
-  //   }
-    
-    
-  //   //update R_adjIndex  
-  //   R_adjIndex[originID] = sizeAdj; //需要保存R_adj的大小
-  //   //update R_adj
-    
-  //     //使用realloc函数增加空间
-  //   R_adj.reserve(2*sizeAdj);
-    
-  //   if(sizeAdj+ebuffer.size()<R_adj.capacity()){
-  //   for(int i =0; i < ebuffer.size(); ++i){
-  //     R_adj[sizeAdj++] = ebuffer[i][1];
-  //   }
-  //   }
-  //   else{
-  //     R_adj.reserve(sizeAdj+3*ebuffer.size());
-  //     for(int i =0; i < ebuffer.size(); ++i){
-  //     R_adj[sizeAdj++] = ebuffer[i][1];
-  //   }
-  //   }
-
-  //   // num_v = vertex.size();
-  //   num_e = elabel.size();
-  //   degree_R[originID].nodeid = my_rank;
-  //   localVer.insert(originID);
-  //   // degree_R[originID].nodeid = my_rank;
-  //   return true;
-  // }
-
-  bool updata(unsigned* buffer, int count){
-    
-    //tbb::spin_mutex::scoped_lock lock(update_mutex);
-    //auto t0 = std::chrono::steady_clock::now();
-    int size = buffer[0];
-    //unsigned old_sizeAdj = sizeAdj;
-
-    // std::ostringstream oss;                    // 线程局部缓存，减少锁粒度
-    // oss << "========== update called ==========\n";
-    // oss << "old_sizeAdj=" << old_sizeAdj << '\n';
-    // oss << "insert_size=" << (count - size - 1) << '\n';
-    // oss << "insert_data=[";
-
-    for(int i=0;i<size;i++){
-      unsigned vid=buffer[i+1];
-      //bitmap->set(my_rank, vid, LOCAL);
-      //degree_R[vid].nodeid = my_rank;
-      R_adjIndex[vid] = sizeAdj;
-      sizeAdj += degree_R[vid].deg;
-    }
-    R_adj.grow_to_at_least(sizeAdj);
-    // auto new_space = R_adj.grow_by(count - size -1);
-    // std::copy(buffer +1 + size, buffer + count, new_space);
-    auto newspace = R_adj.grow_by(count - size -1);
-    std::copy(buffer +1 + size, buffer + count, newspace);
-    //R_adj.reserve(sizeAdj);
-    // for(int i=size+1;i<count;i++){
-    //   R_adj[old_sizeAdj++]=buffer[i];
-    //   oss << buffer[i] << (i + 1 < count ? ',' : ']');
-    // }
-    // oss << "\nnew_sizeAdj=" << sizeAdj << '\n'
-    // << "R_adj.size()=" << R_adj.size() << "\n\n";
-    // auto t1 = std::chrono::steady_clock::now();
-    // auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-    //g_total_us += us; 
-    // oss << "elapsed_us=" << us << "\n\n";
-    // std::ofstream ofs("/home/caohaoshuang/pjj/distributed_graph_query/PMiner-undirect_requestbuffer/log.txt", std::ios::app);
-    //     ofs << oss.str();
-    //memcpy(new_space, buffer + size + 1, (count - size -1)*sizeof(unsigned));
-    return true;
-  }
-
-  // 一次处理一整批，避免多次 grow_by
-bool updata_batch(const unsigned* buffer, int count, int start_vid, int size) {
-  unsigned need = 0;
+  bool updata_batch(const unsigned* buffer, int count, int start_vid, int size) {
+  unsigned neighbor_offset = 1 + size;
   for (int i = 0; i < size; ++i) {
       unsigned vid = buffer[i + 1];
-      need += degree_R[vid].deg;
-  }
-  unsigned old_base = 0;
-  {
-      tbb::spin_mutex::scoped_lock lock(g_resize_mtx);
-      old_base = sizeAdj;
-      sizeAdj += need;
-      auto newspace = R_adj.grow_by(need);
-      std::copy(buffer +1 + size, buffer + count, newspace);
-      unsigned local_off = old_base;
-      for (int i = 0; i < size; ++i) {
-          unsigned vid = buffer[i + 1];
-          unsigned deg = degree_R[vid].deg;
-          R_adjIndex[vid] = local_off;
-          local_off += deg;
-      }
+      unsigned deg = degree_R[vid].deg;
+      std::vector<unsigned> neighbors(buffer + neighbor_offset,
+                                       buffer + neighbor_offset + deg);
+      sort(neighbors.begin(), neighbors.end());
+      tbb::concurrent_hash_map<unsigned, std::vector<unsigned>>::accessor acc;
+      remote_adjIndex.insert(acc, vid);
+      acc->second = std::move(neighbors);
+      neighbor_offset += deg;
   }
   return true;
 }

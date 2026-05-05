@@ -319,8 +319,10 @@ private:
 
         // === Step 2: 执行原始挖掘逻辑（min_schedule / int_schedule / equivalent group）===
     
-        unsigned R_out_start = g->getR_adjIndex(current_match_RID);
-        unsigned R_out_end = R_out_start + g->getR_deg(current_match_RID);
+        const unsigned* nbr_data = nullptr;
+        unsigned nbr_len = 0;
+        bool found = g->getNeighbors(current_match_RID, nbr_data, nbr_len);
+        assert(found && "Neighbor data not available");
     
         int min_size = p->min_schedule[index].size();
         int int_size = p->int_schedule[index].size();
@@ -328,13 +330,12 @@ private:
     
         // --- 处理 min_schedule：扩展边 ---
         if (min_size > 0) {
-            size_t neighbor_count = R_out_end - R_out_start;
             for(int i=0;i<min_size;i++){
                 P_ID tmp_p=p->min_schedule[index][i];
                 vector<unsigned int> tmp;
-                tmp.reserve(neighbor_count);
-                for(unsigned j=R_out_start; j < R_out_end ; ++j){
-                    R_ID tmpid = g->getR_adj(j);
+                tmp.reserve(nbr_len);
+                for(unsigned j=0; j < nbr_len ; ++j){
+                    R_ID tmpid = nbr_data[j];
                     if(isTraversed.test(tmpid) == 0){
                         int degree_R_deg = g->getR_deg(tmpid);
                         if(degree_R_deg >= degree_P[tmp_p].indeg + degree_P[tmp_p].outdeg){
@@ -354,7 +355,6 @@ private:
     
         // --- 处理 int_schedule：求交 ---
         if (int_size > 0) {
-            size_t neighbor_count = R_out_end - R_out_start;
             for (int j = 0; j < int_size; ++j) {
                 P_ID tmp_p = p->int_schedule[index][j];
                 const RowSlice& cur_slice = input_snapshot->rows()[tmp_p];
@@ -362,12 +362,12 @@ private:
                 size_t cur_len = cur_slice.length;
     
                 std::vector<R_ID> intersect_result;
-                intersect_result.reserve(std::min(neighbor_count, cur_len));
-                unsigned istart = R_out_start;
+                intersect_result.reserve(std::min((size_t)nbr_len, cur_len));
+                unsigned istart = 0;
                 size_t jstart = 0;
     
-                while (istart < R_out_end && jstart < cur_len) {
-                    R_ID r_nbr = g->getR_adj(istart);
+                while (istart < nbr_len && jstart < cur_len) {
+                    R_ID r_nbr = nbr_data[istart];
                     R_ID c_val = cur_data[jstart];
     
                     if (r_nbr == c_val) {
@@ -433,10 +433,10 @@ private:
             }
         }
 
-        // === Step 2: 执行原始挖掘逻辑（min_schedule / int_schedule / equivalent group）===
-    
-        unsigned R_out_start = g->getR_adjIndex(current_match_RID);
-        unsigned R_out_end = R_out_start + g->getR_deg(current_match_RID);
+        const unsigned* nbr_data = nullptr;
+        unsigned nbr_len = 0;
+        bool found = g->getNeighbors(current_match_RID, nbr_data, nbr_len);
+        assert(found && "Neighbor data not available");
     
         int min_size = p->min_schedule[index].size();
         int int_size = p->int_schedule[index].size();
@@ -447,8 +447,8 @@ private:
             for(int i=0;i<min_size;i++){
                 P_ID tmp_p=p->min_schedule[index][i];
                 vector<unsigned int> tmp;
-                for(unsigned j=R_out_start; j < R_out_end ; ++j){
-                    R_ID tmpid = g->getR_adj(j);
+                for(unsigned j=0; j < nbr_len ; ++j){
+                    R_ID tmpid = nbr_data[j];
                     if(isTraversed.test(tmpid) == 0){
                         int degree_R_deg = g->getR_deg(tmpid);
                         if(degree_R_deg >= degree_P[tmp_p].indeg + degree_P[tmp_p].outdeg){
@@ -475,11 +475,11 @@ private:
                 size_t cur_len = cur_slice.length;
     
                 std::vector<R_ID> intersect_result;
-                unsigned istart = R_out_start;
+                unsigned istart = 0;
                 size_t jstart = 0;
     
-                while (istart < R_out_end && jstart < cur_len) {
-                    R_ID r_nbr = g->getR_adj(istart);
+                while (istart < nbr_len && jstart < cur_len) {
+                    R_ID r_nbr = nbr_data[istart];
                     R_ID c_val = cur_data[jstart];
     
                     if (r_nbr == c_val) {
@@ -503,26 +503,42 @@ private:
             }
         }
     
-        // --- 处理 equivalent group 复制 ---
+        // --- 处理 equivalent_group_schedule_final ---
         if (group_size > 0) {
-            for (int i = 0; i < group_size; ++i) {
-                const auto& group = p->equivalent_group_schedule_final[index][i];
-                if (group.size() <= 1) continue;
-    
-                P_ID src_v = group[0];
-                const RowSlice& src_slice = new_rows[src_v];
-    
-                for (size_t k = 1; k < group.size(); ++k) {
-                    P_ID dst_v = group[k];
-                    new_rows[dst_v] = src_slice;  // ✅ 共享源数据
+            for (int j = 0; j < group_size; ++j) {
+                P_ID tmp_p = p->equivalent_group_schedule_final[index][j];
+                vector<unsigned int> tmp;
+                for(unsigned j2=0; j2 < nbr_len ; ++j2){
+                    R_ID tmpid = nbr_data[j2];
+                    if(isTraversed.test(tmpid) == 0){
+                        tmp.push_back(tmpid);
+                    }
                 }
+                if(tmp.size()==0){
+                    return false;
+                }
+                auto data_ptr = make_array_shared(tmp.size());
+                std::memcpy(data_ptr.get(), tmp.data(), tmp.size() * sizeof(unsigned int));
+                new_rows[tmp_p] = RowSlice(data_ptr, tmp.size());
+            }
+        }
+    
+        // === Step 3: 填充 output snapshot ===
+        for (uint32_t v = 0; v < num_v; ++v) {
+            if (new_rows[v].length > 0 && new_rows[v].data) {
+                output->rows()[v] = new_rows[v];
+            } else if (v == p->getcurrent_match_PID(index)) {
+                auto data_ptr = make_single_shared(current_match_RID);
+                new_rows[v] = RowSlice(data_ptr, 1);
+                output->rows()[v] = new_rows[v];
+            } else {
+                output->rows()[v] = input_snapshot->rows()[v];
             }
         }
         return true;
       }
 
 
-    //状态同步
     void status_sync(int isidle){
         if(my_rank != MASTER_RANK){
             MPI_Send(&isidle, 1, MPI_INT, MASTER_RANK, STATUS_SYNC_CHANNEL, MPI_COMM_WORLD);

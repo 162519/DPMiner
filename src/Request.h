@@ -217,31 +217,14 @@ private:
             for (auto& it : b.items) {
                 for (unsigned i = 0; i < it.data.size(); ++i) {
                     unsigned vid = it.data[i];
-                    unsigned deg   = g->getdegree(vid);
-                    unsigned start = g->getR_adjIndex(vid);
-                    //const unsigned* adj = g->getR_adj_data() + start;
-                    /* 再检查每个邻居 */
-                    // for (unsigned j = 0; j < deg; ++j) {
-                    //     unsigned nbr = adj[j];
-                    //     if (nbr >= g->getnum_v()) {
-                    //         fprintf(stderr,"[%d] send: vid=%u  nbr[%u]=%u >= Vnum=%u  (dst=%d)\n",
-                    //                 my_rank, vid, j, nbr, g->getnum_v(), dst);
-                    //         fflush(stderr); abort();
-                    //     }
-                    // }
+                    const unsigned* nbr_data = nullptr;
+                    unsigned deg = 0;
+                    g->getLocalNeighbors(vid, nbr_data, deg);
                     for(unsigned j = 0; j < deg; ++j) {
-                        unsigned nbr = g->getR_adj(start + j);
+                        unsigned nbr = nbr_data[j];
                         payload.push_back(nbr);
-                        if (nbr >= g->getnum_v()) {
-                            fprintf(stderr,"[%d] send: vid=%u  nbr[%u]=%u >= Vnum=%u  (dst=%d)\n",
-                                    my_rank, vid, j, nbr, g->getnum_v(), dst);
-                            fflush(stderr); abort();
-                        }
                     }
-                    //payload.insert(payload.end(), adj, adj + deg);
-                //     payload.insert(payload.end(),
-                //    g->getR_adj_data() + start,   // 连续起始
-                //    g->getR_adj_data() + start + deg);
+                }
                 }
             }
 
@@ -275,11 +258,11 @@ private:
 
     /* ---------------- 单顶点处理 ---------------- */
     void processSingleVertex(unsigned vid, std::vector<unsigned>& resp) {
-        unsigned deg   = g->getdegree(vid);
-        unsigned start = g->getR_adjIndex(vid);
-        unsigned end   = start + deg;
-        for (unsigned i = start; i < end; ++i)
-            resp.push_back(g->getR_adj(i));
+        const unsigned* nbr_data = nullptr;
+        unsigned deg = 0;
+        g->getLocalNeighbors(vid, nbr_data, deg);
+        for (unsigned i = 0; i < deg; ++i)
+            resp.push_back(nbr_data[i]);
     }
 
     /* ---------------- 成员 ---------------- */
