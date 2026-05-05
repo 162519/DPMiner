@@ -37,6 +37,7 @@ private:
 
     std::atomic<unsigned long long> finalAns=0;
     std::atomic<int> inFlightTasks_{0};
+    double precache_ratio_;
     ThreadSlot* computeThreadSlot_ = nullptr;
     ThreadSlot* mainThreadSlot_ = nullptr;
     //直接判断标签是否一致
@@ -56,6 +57,63 @@ private:
             }
         }
         return true;
+    }
+
+    void precacheHighDegreeVertices() {
+        if (precache_ratio_ <= 0.0) return;
+
+        vector<pair<unsigned, unsigned>> remoteVertices;
+        unsigned num_v = g->getnum_v();
+        for (unsigned vid = 0; vid < num_v; ++vid) {
+            if (!g->isLocal(vid)) {
+                remoteVertices.emplace_back(g->getR_deg(vid), vid);
+            }
+        }
+        sort(remoteVertices.begin(), remoteVertices.end(),
+             [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        size_t precacheCount = static_cast<size_t>(remoteVertices.size() * precache_ratio_);
+        if (precacheCount == 0) return;
+        precacheCount = min(precacheCount, remoteVertices.size());
+
+        vector<unsigned> precacheVids;
+        precacheVids.reserve(precacheCount);
+        for (size_t i = 0; i < precacheCount; ++i) {
+            unsigned vid = remoteVertices[i].second;
+            if (requestedVids.count(vid) == 0) {
+                bitset<8> nodeList = bitmap->getNodeList(vid);
+                bool hasOwner = false;
+                for (int j = 0; j < WORKER_NUM; ++j) {
+                    if (j != my_rank && nodeList.test(j)) {
+                        hasOwner = true;
+                        break;
+                    }
+                }
+                if (hasOwner) {
+                    precacheVids.push_back(vid);
+                }
+            }
+        }
+
+        if (precacheVids.empty()) return;
+
+        printf("[rank %d] precache: top %zu/%zu remote vertices (ratio=%.2f)\n",
+               my_rank, precacheVids.size(), remoteVertices.size(), precache_ratio_);
+
+        getRemoteData(precacheVids);
+
+        unordered_set<unsigned> pendingSet(precacheVids.begin(), precacheVids.end());
+        {
+            std::unique_lock<std::mutex> lk(g_dataReadyMtx);
+            g_dataReadyCv.wait(lk, [&pendingSet] {
+                for (unsigned vid : pendingSet) {
+                    if (bitmap->get(my_rank, vid) != LOCAL) return false;
+                }
+                return true;
+            });
+        }
+
+        printf("[rank %d] precache: %zu vertices ready\n", my_rank, precacheVids.size());
     }
 
     vector<unsigned> analyzeBatchRemoteVids(const vector<Task>& tasks) {
@@ -1064,11 +1122,12 @@ private:
 
 public:
 
-    PMiner(Graph *graph, Pattern *pattern, int threadNum) 
+    PMiner(Graph *graph, Pattern *pattern, int threadNum, double precache_ratio = 0.0) 
     {
         g = graph;
         p = pattern;
         ThreadNum = threadNum;
+        precache_ratio_ = max(0.0, min(precache_ratio, 1.0));
         degree_P = p->getdegree_P();
         degree_R = g->getdegree_R();
         finalAns = 0;
@@ -1127,10 +1186,8 @@ public:
  //degree_R=g->getdegree_R();
  gd.stop();
 
-//  int j=1;   
-//  while(j){
-//     sleep(5);  // 陷入休眠，避免执行到程序异常处，导致中途退出
-//   }
+        precacheHighDegreeVertices();
+        worker_barrier();
 
         start_timer(TOTAL_TIMER);
         searchALLPR(g, p);

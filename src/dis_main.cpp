@@ -23,8 +23,9 @@ int main(int argc, char *argv[]){
   start_timer(LOAD_TIMER);
 
   //=======================================stable version================================
-  if(argc != 5){
-    printf("input error! usage: <method> <Graph> <Patternv> <Patterne>\n");
+  if(argc != 6){
+    printf("input error! usage: <method> <Graph> <Patternv> <Patterne> <precache_ratio>\n");
+    printf("  precache_ratio: 0.0~1.0, proportion of high-degree remote vertices to pre-cache (0 = disabled)\n");
     exit(1);
   }
   string indexFile = "";  //更改划分策略后，可能需要根据划分的顶点文件生成位图
@@ -38,6 +39,7 @@ int main(int argc, char *argv[]){
   string preGraph = argv[2];
   inputPatternv = argv[3];
   inputPatterne = argv[4];
+  double precache_ratio = atof(argv[5]);
 
   if (method == "hash") {
     inputGraphv = preGraph + "/subvertex" + to_string(my_rank) +".txt";
@@ -91,7 +93,7 @@ int main(int argc, char *argv[]){
   Pattern *p = new Pattern(inputPatternv, inputPatterne);
   
   int thn = 28;  //线程数threadNum, 运行前待修改线程数量!!!!!!!!!!!!!!
-  PMiner *pminer = new PMiner(g, p, thn);
+  PMiner *pminer = new PMiner(g, p, thn, precache_ratio);
   //初始化位图  
   pminer->buildBitMap(type, indexFile, g->getnum_v(),my_rank);
   // pminer->printBitMap();
