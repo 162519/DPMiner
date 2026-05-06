@@ -449,27 +449,6 @@ private:
             }
         }
     
-        // --- 处理 equivalent group 复制 ---
-        if (group_size > 0) {
-            for (int i = 0; i < group_size; ++i) {
-                const auto& group = p->equivalent_group_schedule_final[index][i];
-                if (group.size() <= 1) continue;
-    
-                P_ID src_v = group[0];
-                const RowSlice& src_slice = new_rows[src_v];
-    
-                for (size_t k = 1; k < group.size(); ++k) {
-                    P_ID dst_v = group[k];
-                    new_rows[dst_v] = src_slice;  // ✅ 共享源数据
-                }
-            }
-        }
-    
-        // === Step 3: 创建输出快照 ===
-        std::copy(new_rows.begin(), new_rows.end(), output->rows());
-        return true;
-      }
-
       bool extendEdgePattern_final_new(std::vector<RowSlice>& new_rows, unsigned int index, R_ID current_match_RID, CowSnapshot* input_snapshot, TravSet& isTraversed){
         ScopedTimer prof(Profiler::T_EXTEND_FINAL);
         const uint32_t num_v = p->getnum_v();
@@ -564,35 +543,25 @@ private:
         // --- 处理 equivalent_group_schedule_final ---
         if (group_size > 0) {
             for (int j = 0; j < group_size; ++j) {
-                P_ID tmp_p = p->equivalent_group_schedule_final[index][j];
-                vector<unsigned int> tmp;
-                for(unsigned j2=0; j2 < nbr_len ; ++j2){
-                    R_ID tmpid = nbr_data[j2];
-                    if(isTraversed.test(tmpid) == 0){
-                        tmp.push_back(tmpid);
+                const auto& group = p->equivalent_group_schedule_final[index][j];
+                for (P_ID tmp_p : group) {
+                    vector<unsigned int> tmp;
+                    for(unsigned j2=0; j2 < nbr_len ; ++j2){
+                        R_ID tmpid = nbr_data[j2];
+                        if(isTraversed.test(tmpid) == 0){
+                            tmp.push_back(tmpid);
+                        }
                     }
+                    if(tmp.size()==0){
+                        return false;
+                    }
+                    auto data_ptr = make_array_shared(tmp.size());
+                    std::memcpy(data_ptr.get(), tmp.data(), tmp.size() * sizeof(unsigned int));
+                    new_rows[tmp_p] = RowSlice(data_ptr, tmp.size());
                 }
-                if(tmp.size()==0){
-                    return false;
-                }
-                auto data_ptr = make_array_shared(tmp.size());
-                std::memcpy(data_ptr.get(), tmp.data(), tmp.size() * sizeof(unsigned int));
-                new_rows[tmp_p] = RowSlice(data_ptr, tmp.size());
             }
         }
-    
-        // === Step 3: 填充 output snapshot ===
-        for (uint32_t v = 0; v < num_v; ++v) {
-            if (new_rows[v].length > 0 && new_rows[v].data) {
-                output->rows()[v] = new_rows[v];
-            } else if (v == p->getcurrent_match_PID(index)) {
-                auto data_ptr = make_single_shared(current_match_RID);
-                new_rows[v] = RowSlice(data_ptr, 1);
-                output->rows()[v] = new_rows[v];
-            } else {
-                output->rows()[v] = input_snapshot->rows()[v];
-            }
-        }
+
         return true;
       }
 

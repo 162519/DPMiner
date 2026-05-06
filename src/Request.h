@@ -199,61 +199,60 @@ private:
     /* ---------------- worker 线程 ---------------- */
     void workerLoop() {
         try {
-        BatchBuf b;
-        while (batchQueue.pop(b)) {
-            ScopedTimer profW(Profiler::T_REQ_WORKER);
-            ScopedActive profAct(workerSlot_);
-            int dst = b.items[0].src;
-            std::vector<unsigned> payload;
-            size_t total = 1;
-            unsigned vertex_count = 0;
-            for (auto& it : b.items) {
-                total += it.data.size()+it.nei_num;
-                vertex_count += it.data.size();
-            }
-            payload.reserve(total);
-            payload.push_back(vertex_count);    // 头部：顶点数
-            for (auto& it : b.items) payload.insert(payload.end(), it.data.begin(), it.data.end());
-            for (auto& it : b.items) {
-                for (unsigned i = 0; i < it.data.size(); ++i) {
-                    unsigned vid = it.data[i];
-                    const unsigned* nbr_data = nullptr;
-                    unsigned deg = 0;
-                    g->getLocalNeighbors(vid, nbr_data, deg);
-                    for(unsigned j = 0; j < deg; ++j) {
-                        unsigned nbr = nbr_data[j];
-                        payload.push_back(nbr);
+            BatchBuf b;
+            while (batchQueue.pop(b)) {
+                ScopedTimer profW(Profiler::T_REQ_WORKER);
+                ScopedActive profAct(workerSlot_);
+                int dst = b.items[0].src;
+                std::vector<unsigned> payload;
+                size_t total = 1;
+                unsigned vertex_count = 0;
+                for (auto& it : b.items) {
+                    total += it.data.size()+it.nei_num;
+                    vertex_count += it.data.size();
+                }
+                payload.reserve(total);
+                payload.push_back(vertex_count);
+                for (auto& it : b.items) payload.insert(payload.end(), it.data.begin(), it.data.end());
+                for (auto& it : b.items) {
+                    for (unsigned i = 0; i < it.data.size(); ++i) {
+                        unsigned vid = it.data[i];
+                        const unsigned* nbr_data = nullptr;
+                        unsigned deg = 0;
+                        g->getLocalNeighbors(vid, nbr_data, deg);
+                        for(unsigned j = 0; j < deg; ++j) {
+                            unsigned nbr = nbr_data[j];
+                            payload.push_back(nbr);
+                        }
                     }
                 }
+
+                MsgHeader hdr;
+                hdr.bytes = payload.size() * sizeof(unsigned);
+                std::vector<unsigned> msg( (sizeof(hdr)+hdr.bytes-1)/sizeof(unsigned) + 1 );
+                unsigned char* p = reinterpret_cast<unsigned char*>(msg.data());
+                std::memcpy(p, &hdr, sizeof(hdr));
+                std::memcpy(p + sizeof(hdr), payload.data(), hdr.bytes);
+                size_t msgWords = (sizeof(hdr) + hdr.bytes + sizeof(unsigned)-1) / sizeof(unsigned);
+
+                {
+                    std::lock_guard<std::mutex> lk(sendMtx_);
+                    pendingSends_.push_back({std::move(msg), MPI_REQUEST_NULL});
+                    MPI_Isend(pendingSends_.back().first.data(), msgWords, MPI_UNSIGNED,
+                              dst, RESPONSE_MSG, MPI_COMM_WORLD, &pendingSends_.back().second);
+                    Profiler::instance().incCounter(Profiler::C_ISENDS);
                 }
+                cleanCompletedSends();
             }
-
-            MsgHeader hdr;
-        hdr.bytes = payload.size() * sizeof(unsigned);
-        std::vector<unsigned> msg( (sizeof(hdr)+hdr.bytes-1)/sizeof(unsigned) + 1 );
-        unsigned char* p = reinterpret_cast<unsigned char*>(msg.data());
-        std::memcpy(p, &hdr, sizeof(hdr));                       // 拷头部
-        std::memcpy(p + sizeof(hdr), payload.data(), hdr.bytes); // 拷 payload
-        size_t msgWords = (sizeof(hdr) + hdr.bytes + sizeof(unsigned)-1) / sizeof(unsigned);
-
-        {
-            std::lock_guard<std::mutex> lk(sendMtx_);
-            pendingSends_.push_back({std::move(msg), MPI_REQUEST_NULL});
-            MPI_Isend(pendingSends_.back().first.data(), msgWords, MPI_UNSIGNED,
-                      dst, RESPONSE_MSG, MPI_COMM_WORLD, &pendingSends_.back().second);
-            Profiler::instance().incCounter(Profiler::C_ISENDS);
         }
-        cleanCompletedSends();
+        catch (const std::exception& e) {
+            fprintf(stderr,"[rank %d] worker thread exception: %s\n", my_rank, e.what());
+            std::abort();
         }
-    }
-    catch (const std::exception& e) {
-        fprintf(stderr,"[rank %d] worker thread exception: %s\n", my_rank, e.what());
-        std::abort();
-    }
-    catch (...) {
-        fprintf(stderr,"[rank %d] worker thread unknown exception\n", my_rank);
-        std::abort();
-    }
+        catch (...) {
+            fprintf(stderr,"[rank %d] worker thread unknown exception\n", my_rank);
+            std::abort();
+        }
     }
 
     /* ---------------- 单顶点处理 ---------------- */
