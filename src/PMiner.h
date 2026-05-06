@@ -449,6 +449,24 @@ private:
             }
         }
     
+        // --- 处理 equivalent_group_schedule_final ---
+        if (group_size > 0) {
+            for (int j = 0; j < group_size; ++j) {
+                const auto& group = p->equivalent_group_schedule_final[index][j];
+                if (group.size() <= 1) continue;
+                P_ID src_v = group[0];
+                const RowSlice& src_slice = new_rows[src_v];
+                for (size_t k = 1; k < group.size(); ++k) {
+                    new_rows[group[k]] = src_slice;
+                }
+            }
+        }
+
+        // === Step 3: 创建输出快照 ===
+        std::copy(new_rows.begin(), new_rows.end(), output->rows());
+        return true;
+      }
+
       bool extendEdgePattern_final_new(std::vector<RowSlice>& new_rows, unsigned int index, R_ID current_match_RID, CowSnapshot* input_snapshot, TravSet& isTraversed){
         ScopedTimer prof(Profiler::T_EXTEND_FINAL);
         const uint32_t num_v = p->getnum_v();
