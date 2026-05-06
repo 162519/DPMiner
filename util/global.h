@@ -60,7 +60,7 @@ typedef unsigned R_ID;
 #define min_batch_size 8
 #define timeout_ms 50
 
-#define PREFETCH_BATCH_SIZE 256
+#define PREFETCH_BATCH_SIZE 512
 
 std::atomic<bool> isAllIdle(false);
 std::atomic<int> num(0);

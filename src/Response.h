@@ -50,7 +50,7 @@ public:
     Response() {
         listenSlot_ = Profiler::instance().registerThread("resp/listen");
         workerSlot_ = Profiler::instance().registerThread("resp/worker");
-        int n = std::min(4u, std::thread::hardware_concurrency());
+        int n = 1;
         workers.reserve(n);
         for (int i = 0; i < n; ++i)
             workers.emplace_back(&Response::workerLoop, this);

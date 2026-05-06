@@ -92,7 +92,7 @@ int main(int argc, char *argv[]){
   cout<<111111<<endl;
   Pattern *p = new Pattern(inputPatternv, inputPatterne);
   
-  int thn = 28;  //线程数threadNum, 运行前待修改线程数量!!!!!!!!!!!!!!
+  int thn = 26;
   PMiner *pminer = new PMiner(g, p, thn, precache_ratio);
   //初始化位图  
   pminer->buildBitMap(type, indexFile, g->getnum_v(),my_rank);

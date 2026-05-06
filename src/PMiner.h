@@ -20,19 +20,16 @@ class PMiner {
 
 private:
 
-    Pattern *p; // 查询图
+    Pattern *p;
     Degree *degree_P;
     std::vector<Degree_R> degree_R;
-    int ThreadNum;         //运行前待修改线程数量!!!!!!!!!!!!!!
+    int ThreadNum;
     task_group tg;
-    vector<unsigned> minMatchID_PMR; // 存储满足匹配模式图起始点真实图中的顶点id
-    
+    vector<unsigned> minMatchID_PMR;
 
     //分布式
-    Request req;    //收集其他节点发送的请求，并返回相应的数据
-    Response resp;  //接收返回的数据
-    //RequestBuffer req_buffer; //请求缓冲区
-    // Prefetch prefetch; //预取数据
+    Request req;
+    Response resp;
     global_degree gd;
 
     std::atomic<unsigned long long> finalAns=0;
@@ -40,6 +37,16 @@ private:
     double precache_ratio_;
     ThreadSlot* computeThreadSlot_ = nullptr;
     ThreadSlot* mainThreadSlot_ = nullptr;
+    ThreadSlot* prefetchThreadSlot_ = nullptr;
+
+    // 双缓冲流水线
+    PrefetchBatch prefetchBufs_[2];
+    std::atomic<bool> prefetchReady_[2]{{false},{false}};
+    std::atomic<bool> prefetchDone_{false};
+    std::mutex prefetchMtx_;
+    std::condition_variable prefetchCv_;
+    std::mutex dispatchMtx_;
+    std::condition_variable dispatchCv_;
     //直接判断标签是否一致
     bool islabelEqual(vector<int> *label1, vector<int> *label2)
     {
@@ -118,25 +125,74 @@ private:
 
     vector<unsigned> analyzeBatchRemoteVids(const vector<Task>& tasks) {
         ScopedTimer prof(Profiler::T_ANALYZE_REMOTE);
-        vector<unsigned> allVids;
+        unordered_set<unsigned> remoteSet;
         for (const Task& tk : tasks) {
             P_ID current_match_PID = p->getcurrent_match_PID(tk.centerIdx);
-            unsigned int* tmp = tk.snapshot->rows()[current_match_PID].get();
+            const unsigned* tmp = tk.snapshot->rows()[current_match_PID].get();
             unsigned length = tk.snapshot->rows()[current_match_PID].length;
             for (unsigned i = 0; i < length; ++i) {
-                allVids.push_back(tmp[i]);
+                unsigned vid = tmp[i];
+                if (bitmap->get(my_rank, vid) != LOCAL) {
+                    remoteSet.insert(vid);
+                }
             }
         }
-        sort(allVids.begin(), allVids.end());
-        allVids.erase(unique(allVids.begin(), allVids.end()), allVids.end());
-        vector<unsigned> remoteVids;
-        remoteVids.reserve(allVids.size());
-        for (unsigned vid : allVids) {
-            if (bitmap->get(my_rank, vid) != LOCAL) {
-                remoteVids.push_back(vid);
+        return vector<unsigned>(remoteSet.begin(), remoteSet.end());
+    }
+
+    void prefetchLoop() {
+        prefetchThreadSlot_ = Profiler::instance().registerThread("prefetch");
+        ScopedActive profPrefetch(prefetchThreadSlot_);
+        int idx = 0;
+        while (true) {
+            PrefetchBatch& buf = prefetchBufs_[idx];
+            buf.clear();
+            bool found = collectBatchFromQueues(buf);
+            if (!found) {
+                if (inFlightTasks_.load(std::memory_order_acquire) == 0) {
+                    std::atomic_thread_fence(std::memory_order_acquire);
+                    if (levelQueues->empty()) {
+                        prefetchDone_.store(true, std::memory_order_release);
+                        prefetchReady_[idx].store(true, std::memory_order_release);
+                        {
+                            std::lock_guard<std::mutex> lk(dispatchMtx_);
+                            dispatchCv_.notify_one();
+                        }
+                        break;
+                    }
+                }
+                {
+                    std::unique_lock<std::mutex> lk(prefetchMtx_);
+                    prefetchCv_.wait_for(lk, std::chrono::microseconds(200));
+                }
+                continue;
             }
+
+            vector<unsigned> remoteVids = analyzeBatchRemoteVids(buf.tasks());
+            if (!remoteVids.empty()) {
+                buf.pendingVids().insert(remoteVids.begin(), remoteVids.end());
+                {
+                    ScopedTimer profGR(Profiler::T_GET_REMOTE);
+                    getRemoteData(remoteVids);
+                }
+            } else {
+                buf.dataReady() = true;
+            }
+
+            prefetchReady_[idx].store(true, std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lk(dispatchMtx_);
+                dispatchCv_.notify_one();
+            }
+
+            {
+                std::unique_lock<std::mutex> lk(prefetchMtx_);
+                prefetchCv_.wait(lk, [this, idx] {
+                    return !prefetchReady_[idx].load(std::memory_order_acquire);
+                });
+            }
+            idx = 1 - idx;
         }
-        return remoteVids;
     }
 
     void searchALLPR(Graph *g, Pattern *p)
@@ -177,54 +233,59 @@ private:
         cout<<"initial tasks pushed"<<endl;
         StartTimer(CONCURR_TIMER);
 
-        PrefetchBatch* currentBatch = new PrefetchBatch();
-        bool hasCurrentBatch = false;
+        prefetchReady_[0].store(false, std::memory_order_release);
+        prefetchReady_[1].store(false, std::memory_order_release);
+        prefetchDone_.store(false, std::memory_order_release);
 
-        while(true) {
-            if (!hasCurrentBatch) {
-                bool found = collectBatchFromQueues(*currentBatch);
-                if (found) {
-                    vector<unsigned> remoteVids = analyzeBatchRemoteVids(currentBatch->tasks());
-                    if (!remoteVids.empty()) {
-                        currentBatch->pendingVids().insert(remoteVids.begin(), remoteVids.end());
-                        {
-                            ScopedTimer profGR(Profiler::T_GET_REMOTE);
-                            getRemoteData(remoteVids);
+        std::thread prefetchThread(&PMiner::prefetchLoop, this);
+
+        int idx = 0;
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lk(dispatchMtx_);
+                dispatchCv_.wait(lk, [this, idx] {
+                    return prefetchReady_[idx].load(std::memory_order_acquire)
+                        || prefetchDone_.load(std::memory_order_acquire);
+                });
+            }
+
+            if (prefetchDone_.load(std::memory_order_acquire)) {
+                for (int i = 0; i < 2; ++i) {
+                    if (prefetchReady_[i].load(std::memory_order_acquire)) {
+                        PrefetchBatch& doneBuf = prefetchBufs_[i];
+                        if (!doneBuf.tasks().empty()) {
+                            {
+                                ScopedTimer profWR(Profiler::T_WAIT_READY);
+                                ScopedWait profWait(mainThreadSlot_);
+                                doneBuf.waitForReady();
+                            }
+                            dispatchBatchToPool(doneBuf);
                         }
-                    } else {
-                        currentBatch->dataReady() = true;
                     }
-                    hasCurrentBatch = true;
                 }
+                break;
             }
 
-            if (hasCurrentBatch) {
-                {
-                    ScopedTimer profWR(Profiler::T_WAIT_READY);
-                    ScopedWait profWait(mainThreadSlot_);
-                    currentBatch->waitForReady();
-                }
-                dispatchBatchToPool(*currentBatch);
-                currentBatch->clear();
-                hasCurrentBatch = false;
+            PrefetchBatch& buf = prefetchBufs_[idx];
+
+            {
+                ScopedTimer profWR(Profiler::T_WAIT_READY);
+                ScopedWait profWait(mainThreadSlot_);
+                buf.waitForReady();
+            }
+            dispatchBatchToPool(buf);
+
+            prefetchReady_[idx].store(false, std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lk(prefetchMtx_);
+                prefetchCv_.notify_one();
             }
 
-            if (!hasCurrentBatch) {
-                if (inFlightTasks_.load(std::memory_order_acquire) == 0) {
-                    std::atomic_thread_fence(std::memory_order_acquire);
-                    if (levelQueues->empty()) {
-                        break;
-                    }
-                } else {
-                    if (levelQueues->empty()) {
-                        usleep(100);
-                    }
-                }
-            }
+            idx = 1 - idx;
         }
 
+        prefetchThread.join();
         tg.wait();
-        delete currentBatch;
 
         for(int i=0;i<WORKER_NUM;i++){
             cout<<"pro "<<my_rank<<" to pro "<<i<<" request num: "<<request_num_to_other[i]<<endl;

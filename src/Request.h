@@ -92,7 +92,7 @@ public:
         perRankBatch.resize(world_size);
         listenSlot_ = Profiler::instance().registerThread("req/listen");
         workerSlot_ = Profiler::instance().registerThread("req/worker");
-        int n = std::min(4u, std::thread::hardware_concurrency());
+        int n = 1;
         workers.reserve(n);
         for (int i = 0; i < n; ++i)
             workers.emplace_back(&Request::workerLoop, this);
@@ -111,89 +111,57 @@ private:
     /* ---------------- listen 线程 ---------------- */
     void listen() {
         try {
-        while (!isAllIdle) {
-            int flag;  MPI_Status st;
-            MPI_Iprobe(MPI_ANY_SOURCE, REQUEST_MSG, MPI_COMM_WORLD, &flag, &st);
-            if (flag) {
-                ScopedTimer profL(Profiler::T_REQ_LISTEN);
-                ScopedActive profAct(listenSlot_);
-                Profiler::instance().incCounter(Profiler::C_RECVS);
-                int src = st.MPI_SOURCE;
-                int cnt;
-                MPI_Get_count(&st, MPI_UNSIGNED, &cnt);
-                std::vector<unsigned> reqBuf(cnt);
-                MPI_Recv(reqBuf.data(), cnt, MPI_UNSIGNED,
-                         src, REQUEST_MSG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            while (!isAllIdle) {
+                int flag;  MPI_Status st;
+                MPI_Iprobe(MPI_ANY_SOURCE, REQUEST_MSG, MPI_COMM_WORLD, &flag, &st);
+                if (flag) {
+                    ScopedTimer profL(Profiler::T_REQ_LISTEN);
+                    ScopedActive profAct(listenSlot_);
+                    Profiler::instance().incCounter(Profiler::C_RECVS);
+                    int src = st.MPI_SOURCE;
+                    int cnt;
+                    MPI_Get_count(&st, MPI_UNSIGNED, &cnt);
+                    std::vector<unsigned> reqBuf(cnt);
+                    MPI_Recv(reqBuf.data(), cnt, MPI_UNSIGNED,
+                             src, REQUEST_MSG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-                TaskItem it{src, {}, 0};
-                it.data.insert(it.data.end(), reqBuf.begin(), reqBuf.end());
-                auto& bucket = perRankBatch[src];
-                for(unsigned i=0;i<cnt;++i)
-                {
-                    unsigned vid=reqBuf[i];
-                    it.nei_num+=g->getdegree(vid);
-                }
-                bucket.totalBytes += (it.nei_num+cnt)*sizeof(unsigned);
-                bucket.items.emplace_back(std::move(it));
-                if (bucket.ready()) {
-                    batchQueue.push(std::move(bucket));
-                    bucket.clear();
-                }
-            } else {
-                for (int r = 0; r < world_size; ++r) {
-                    auto& b = perRankBatch[r];
-                    if (!b.items.empty() && b.ready()) {
-                        batchQueue.push(std::move(b));
-                        b.clear();
+                    TaskItem it{src, {}, 0};
+                    it.data.insert(it.data.end(), reqBuf.begin(), reqBuf.end());
+                    auto& bucket = perRankBatch[src];
+                    for(unsigned i=0;i<cnt;++i)
+                    {
+                        unsigned vid=reqBuf[i];
+                        it.nei_num+=g->getdegree(vid);
                     }
+                    bucket.totalBytes += (it.nei_num+cnt)*sizeof(unsigned);
+                    bucket.items.emplace_back(std::move(it));
+                    if (bucket.ready()) {
+                        batchQueue.push(std::move(bucket));
+                        bucket.clear();
+                    }
+                } else {
+                    for (int r = 0; r < world_size; ++r) {
+                        auto& b = perRankBatch[r];
+                        if (!b.items.empty() && b.ready()) {
+                            batchQueue.push(std::move(b));
+                            b.clear();
+                        }
+                    }
+                    usleep(WAIT_TIME_WHEN_IDLE);
                 }
-                usleep(WAIT_TIME_WHEN_IDLE);
             }
+            for (int r = 0; r < world_size; ++r)
+                if (!perRankBatch[r].items.empty())
+                    batchQueue.push(std::move(perRankBatch[r]));
         }
-    }
-    catch (const std::exception& e) {
-        fprintf(stderr,"[rank %d] listen thread exception: %s\n", my_rank, e.what());
-        std::abort();
-    }
-    catch (...) {
-        fprintf(stderr,"[rank %d] listen thread unknown exception\n", my_rank);
-        std::abort();
-    }
-        /* ⑥ 收尾：所有桶 */
-        for (int r = 0; r < world_size; ++r)
-            if (!perRankBatch[r].items.empty())
-                batchQueue.push(std::move(perRankBatch[r]));
-        //         auto& resp = it.data;
-        //         //resp.reserve(128);
-        //         //resp.push_back(cnt);                    // 头部：请求条数
-        //         resp.insert(resp.end(), reqBuf.begin(), reqBuf.end());
-        //         //for (unsigned vid : reqBuf) processSingleVertex(vid, resp);
-        //         for(unsigned i=0;i<cnt;++i)
-        //         {
-        //             unsigned vid=reqBuf[i];
-        //             currBatch.totalBytes += sizeof(unsigned)*(g->getdegree(vid)+1); //预估应答大小
-        //         }
-        //         /* 塞进当前批 */
-        //         //currBatch.totalBytes += it.bytes();
-        //         currBatch.items.emplace_back(std::move(it));
-
-        //         /* 批满了就交出去 */
-        //         if (currBatch.ready()) {
-        //             batchQueue.push(std::move(currBatch));
-        //             currBatch.clear();
-        //         }
-        //     } else {
-        //         /* 没消息，但可能超时 */
-        //         if (!currBatch.items.empty() && currBatch.ready()) {
-        //             batchQueue.push(std::move(currBatch));
-        //             currBatch.clear();
-        //         } else {
-        //             usleep(WAIT_TIME_WHEN_IDLE);
-        //         }
-        //     }
-        // }
-        // /* 收尾 */
-        // if (!currBatch.items.empty()) batchQueue.push(std::move(currBatch));
+        catch (const std::exception& e) {
+            fprintf(stderr,"[rank %d] listen thread exception: %s\n", my_rank, e.what());
+            std::abort();
+        }
+        catch (...) {
+            fprintf(stderr,"[rank %d] listen thread unknown exception\n", my_rank);
+            std::abort();
+        }
     }
 
     /* ---------------- worker 线程 ---------------- */
