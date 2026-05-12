@@ -108,8 +108,8 @@ int main(int argc, char *argv[]){
   
   Profiler::instance().report();
   
-  worker_finalize();
-
   delete pminer;
+  waitForAllPendingSends();
+  worker_finalize();
   return 0;
 }

@@ -254,6 +254,14 @@ void sendReq(req_msg r){
     }
 }
 
+void waitForAllPendingSends() {
+    std::lock_guard<std::mutex> lk(g_sendReqMtx_);
+    for (auto& ps : g_pendingSendReqs) {
+        MPI_Wait(&ps.second, MPI_STATUS_IGNORE);
+    }
+    g_pendingSendReqs.clear();
+}
+
 //获取远程数据
 void getRemoteData(vector<unsigned>& batch){
     vector<vector<unsigned>> destList(WORKER_NUM);
