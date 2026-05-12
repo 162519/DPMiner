@@ -25,6 +25,8 @@
 #include <fstream>
 //multi thread
 #include <queue>
+#include <deque>
+#include <list>
 #include <chrono>
 #include <thread>
 #include <tbb/tbb.h>
@@ -50,7 +52,7 @@ typedef unsigned R_ID;
 #define RESPONSE_MSG 101
 #define STATUS_SYNC_CHANNEL 102
 #define tb_msg 103
-#define WAIT_TIME_WHEN_IDLE 1000 //us
+#define WAIT_TIME_WHEN_IDLE 100 //us
 
 #define MASTER_RANK 0
 
@@ -224,21 +226,36 @@ struct hash_pair {
     } 
 }; 
 
-void sendReq(req_msg r){    
-    //发送请求
-    MPI_Send(r.vid.data(), r.vid.size(), MPI_UNSIGNED, r.dest, REQUEST_MSG, MPI_COMM_WORLD);
-    // gout << "processor " << my_rank << " send requset to " << r.dest << " type: " << r.type << " vid: " << r.vid << endl;
+std::list<std::pair<std::vector<unsigned>, MPI_Request>> g_pendingSendReqs;
+std::mutex g_sendReqMtx_;
+
+void cleanCompletedSendReqs() {
+    std::lock_guard<std::mutex> lk(g_sendReqMtx_);
+    auto it = g_pendingSendReqs.begin();
+    while (it != g_pendingSendReqs.end()) {
+        int flag = 0;
+        MPI_Test(&it->second, &flag, MPI_STATUS_IGNORE);
+        if (flag) {
+            it = g_pendingSendReqs.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void sendReq(req_msg r){
+    cleanCompletedSendReqs();
+    std::vector<unsigned> buf(std::move(r.vid));
+    MPI_Request req = MPI_REQUEST_NULL;
+    MPI_Isend(buf.data(), buf.size(), MPI_UNSIGNED, r.dest, REQUEST_MSG, MPI_COMM_WORLD, &req);
+    {
+        std::lock_guard<std::mutex> lk(g_sendReqMtx_);
+        g_pendingSendReqs.emplace_back(std::move(buf), req);
+    }
 }
 
 //获取远程数据
 void getRemoteData(vector<unsigned>& batch){
-    std::ofstream ofs("/home/caohaoshuang/pjj/distributed_graph_query/PMiner-undirect_mpi_new/tablesize_log.txt", std::ios::app);
-    std::ostringstream oss;
-    for(int i=0;i<batch.size();i++){
-        oss<<batch[i]<<" ";
-    }  
-    oss<<endl;
-    ofs << oss.str();
     vector<vector<unsigned>> destList(WORKER_NUM);
     for(int i = 0; i < batch.size(); i++){
         unsigned vid = batch[i];

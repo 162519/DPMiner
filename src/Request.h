@@ -26,24 +26,6 @@ struct TaskItem {
 class BatchBuf {
 	public:
 		std::deque<TaskItem> items;
-		size_t               totalBytes = 0;
-		using clock = std::chrono::steady_clock;
-		clock::time_point    birth = clock::now();
-	
-		bool ready() const {
-			return totalBytes >= MAX_BYTES ||
-				   items.size() >= MAX_COUNT ||
-				   std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - birth).count() >= MAX_US;
-		}
-		void clear() {
-			items.clear();
-			totalBytes = 0;
-			birth = clock::now();
-		}
-	private:
-		static constexpr size_t MAX_BYTES = 16 * 1024; // 16 kB
-		static constexpr size_t MAX_COUNT = 32;        // 32 条
-		static constexpr int    MAX_US    = 200;       // 200 µs
 };
 
 // ---------------------------------------------------------------------------
@@ -81,15 +63,10 @@ private:
 // ---------------------------------------------------------------------------
 // 4. Request 类
 class Request {
-    std::vector<BatchBuf> perRankBatch;
-    
-    int world_size = 0;
     ThreadSlot* listenSlot_ = nullptr;
     ThreadSlot* workerSlot_ = nullptr;
 public:
     Request() {
-        world_size = WORKER_NUM;
-        perRankBatch.resize(world_size);
         listenSlot_ = Profiler::instance().registerThread("req/listen");
         workerSlot_ = Profiler::instance().registerThread("req/worker");
         int n = 1;
@@ -125,34 +102,17 @@ private:
                     MPI_Recv(reqBuf.data(), cnt, MPI_UNSIGNED,
                              src, REQUEST_MSG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-                    TaskItem it{src, {}, 0};
-                    it.data.insert(it.data.end(), reqBuf.begin(), reqBuf.end());
-                    auto& bucket = perRankBatch[src];
-                    for(unsigned i=0;i<cnt;++i)
-                    {
-                        unsigned vid=reqBuf[i];
-                        it.nei_num+=g->getdegree(vid);
-                    }
-                    bucket.totalBytes += (it.nei_num+cnt)*sizeof(unsigned);
-                    bucket.items.emplace_back(std::move(it));
-                    if (bucket.ready()) {
-                        batchQueue.push(std::move(bucket));
-                        bucket.clear();
-                    }
+                    TaskItem it{src, std::move(reqBuf), 0};
+                    for(unsigned i = 0; i < it.data.size(); ++i)
+                        it.nei_num += g->getdegree(it.data[i]);
+
+                    BatchBuf b;
+                    b.items.emplace_back(std::move(it));
+                    batchQueue.push(std::move(b));
                 } else {
-                    for (int r = 0; r < world_size; ++r) {
-                        auto& b = perRankBatch[r];
-                        if (!b.items.empty() && b.ready()) {
-                            batchQueue.push(std::move(b));
-                            b.clear();
-                        }
-                    }
                     usleep(WAIT_TIME_WHEN_IDLE);
                 }
             }
-            for (int r = 0; r < world_size; ++r)
-                if (!perRankBatch[r].items.empty())
-                    batchQueue.push(std::move(perRankBatch[r]));
         }
         catch (const std::exception& e) {
             fprintf(stderr,"[rank %d] listen thread exception: %s\n", my_rank, e.what());

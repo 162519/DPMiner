@@ -39,14 +39,14 @@ private:
     ThreadSlot* mainThreadSlot_ = nullptr;
     ThreadSlot* prefetchThreadSlot_ = nullptr;
 
-    // 双缓冲流水线
-    PrefetchBatch prefetchBufs_[2];
-    std::atomic<bool> prefetchReady_[2]{{false},{false}};
+    // 多级环形流水线
+    static constexpr int PIPELINE_DEPTH = 4;
+    PrefetchBatch prefetchBufs_[PIPELINE_DEPTH];
+    std::atomic<bool> slotReady_[PIPELINE_DEPTH]{{},{},{},{}};
+    std::atomic<bool> slotConsumed_[PIPELINE_DEPTH]{true,true,true,true};
     std::atomic<bool> prefetchDone_{false};
-    std::mutex prefetchMtx_;
-    std::condition_variable prefetchCv_;
-    std::mutex dispatchMtx_;
-    std::condition_variable dispatchCv_;
+    std::mutex slotMtx_;
+    std::condition_variable slotCv_;
     //直接判断标签是否一致
     bool islabelEqual(vector<int> *label1, vector<int> *label2)
     {
@@ -143,9 +143,16 @@ private:
     void prefetchLoop() {
         prefetchThreadSlot_ = Profiler::instance().registerThread("prefetch");
         ScopedActive profPrefetch(prefetchThreadSlot_);
-        int idx = 0;
+        int produceIdx = 0;
         while (true) {
-            PrefetchBatch& buf = prefetchBufs_[idx];
+            {
+                std::unique_lock<std::mutex> lk(slotMtx_);
+                slotCv_.wait(lk, [this, produceIdx] {
+                    return slotConsumed_[produceIdx].load(std::memory_order_acquire);
+                });
+            }
+
+            PrefetchBatch& buf = prefetchBufs_[produceIdx];
             buf.clear();
             bool found = collectBatchFromQueues(buf);
             if (!found) {
@@ -153,17 +160,17 @@ private:
                     std::atomic_thread_fence(std::memory_order_acquire);
                     if (levelQueues->empty()) {
                         prefetchDone_.store(true, std::memory_order_release);
-                        prefetchReady_[idx].store(true, std::memory_order_release);
+                        slotReady_[produceIdx].store(true, std::memory_order_release);
                         {
-                            std::lock_guard<std::mutex> lk(dispatchMtx_);
-                            dispatchCv_.notify_one();
+                            std::lock_guard<std::mutex> lk(slotMtx_);
+                            slotCv_.notify_all();
                         }
                         break;
                     }
                 }
                 {
-                    std::unique_lock<std::mutex> lk(prefetchMtx_);
-                    prefetchCv_.wait_for(lk, std::chrono::microseconds(200));
+                    std::unique_lock<std::mutex> lk(slotMtx_);
+                    slotCv_.wait_for(lk, std::chrono::microseconds(200));
                 }
                 continue;
             }
@@ -179,19 +186,14 @@ private:
                 buf.dataReady() = true;
             }
 
-            prefetchReady_[idx].store(true, std::memory_order_release);
+            slotConsumed_[produceIdx].store(false, std::memory_order_release);
+            slotReady_[produceIdx].store(true, std::memory_order_release);
             {
-                std::lock_guard<std::mutex> lk(dispatchMtx_);
-                dispatchCv_.notify_one();
+                std::lock_guard<std::mutex> lk(slotMtx_);
+                slotCv_.notify_all();
             }
 
-            {
-                std::unique_lock<std::mutex> lk(prefetchMtx_);
-                prefetchCv_.wait(lk, [this, idx] {
-                    return !prefetchReady_[idx].load(std::memory_order_acquire);
-                });
-            }
-            idx = 1 - idx;
+            produceIdx = (produceIdx + 1) % PIPELINE_DEPTH;
         }
     }
 
@@ -233,25 +235,28 @@ private:
         cout<<"initial tasks pushed"<<endl;
         StartTimer(CONCURR_TIMER);
 
-        prefetchReady_[0].store(false, std::memory_order_release);
-        prefetchReady_[1].store(false, std::memory_order_release);
         prefetchDone_.store(false, std::memory_order_release);
+        for (int i = 0; i < PIPELINE_DEPTH; ++i) {
+            slotReady_[i].store(false, std::memory_order_release);
+            slotConsumed_[i].store(true, std::memory_order_release);
+        }
 
         std::thread prefetchThread(&PMiner::prefetchLoop, this);
 
-        int idx = 0;
+        int consumeIdx = 0;
         while (true) {
             {
-                std::unique_lock<std::mutex> lk(dispatchMtx_);
-                dispatchCv_.wait(lk, [this, idx] {
-                    return prefetchReady_[idx].load(std::memory_order_acquire)
+                std::unique_lock<std::mutex> lk(slotMtx_);
+                slotCv_.wait(lk, [this, consumeIdx] {
+                    return slotReady_[consumeIdx].load(std::memory_order_acquire)
                         || prefetchDone_.load(std::memory_order_acquire);
                 });
             }
 
-            if (prefetchDone_.load(std::memory_order_acquire)) {
-                for (int i = 0; i < 2; ++i) {
-                    if (prefetchReady_[i].load(std::memory_order_acquire)) {
+            if (prefetchDone_.load(std::memory_order_acquire)
+                && !slotReady_[consumeIdx].load(std::memory_order_acquire)) {
+                for (int i = 0; i < PIPELINE_DEPTH; ++i) {
+                    if (slotReady_[i].load(std::memory_order_acquire)) {
                         PrefetchBatch& doneBuf = prefetchBufs_[i];
                         if (!doneBuf.tasks().empty()) {
                             {
@@ -261,12 +266,14 @@ private:
                             }
                             dispatchBatchToPool(doneBuf);
                         }
+                        slotReady_[i].store(false, std::memory_order_release);
+                        slotConsumed_[i].store(true, std::memory_order_release);
                     }
                 }
                 break;
             }
 
-            PrefetchBatch& buf = prefetchBufs_[idx];
+            PrefetchBatch& buf = prefetchBufs_[consumeIdx];
 
             {
                 ScopedTimer profWR(Profiler::T_WAIT_READY);
@@ -275,13 +282,14 @@ private:
             }
             dispatchBatchToPool(buf);
 
-            prefetchReady_[idx].store(false, std::memory_order_release);
+            slotReady_[consumeIdx].store(false, std::memory_order_release);
+            slotConsumed_[consumeIdx].store(true, std::memory_order_release);
             {
-                std::lock_guard<std::mutex> lk(prefetchMtx_);
-                prefetchCv_.notify_one();
+                std::lock_guard<std::mutex> lk(slotMtx_);
+                slotCv_.notify_all();
             }
 
-            idx = 1 - idx;
+            consumeIdx = (consumeIdx + 1) % PIPELINE_DEPTH;
         }
 
         prefetchThread.join();
