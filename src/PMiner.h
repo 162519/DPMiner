@@ -631,11 +631,22 @@ private:
         if (group_size > 0) {
             for (int j = 0; j < group_size; ++j) {
                 const auto& group = p->equivalent_group_schedule_final[index][j];
-                if (group.size() <= 1) continue;
-                P_ID src_v = group[0];
-                const RowSlice& src_slice = new_rows[src_v];
-                for (size_t k = 1; k < group.size(); ++k) {
-                    new_rows[group[k]] = src_slice;
+                if (group.empty()) continue;
+                // Compute full expansion once per group, share across all members
+                vector<unsigned int> tmp;
+                tmp.reserve(nbr_len);
+                for(unsigned j2=0; j2 < nbr_len; ++j2){
+                    R_ID tmpid = nbr_data[j2];
+                    if(isTraversed.test(tmpid) == 0){
+                        tmp.push_back(tmpid);
+                    }
+                }
+                if(tmp.size()==0) return false;
+                auto data_ptr = make_array_shared(tmp.size());
+                std::memcpy(data_ptr.get(), tmp.data(), tmp.size() * sizeof(unsigned int));
+                RowSlice shared(data_ptr, tmp.size());
+                for (P_ID tmp_p : group) {
+                    new_rows[tmp_p] = shared;
                 }
             }
         }
