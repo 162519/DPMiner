@@ -225,11 +225,11 @@ private:
 
         printf("pro %d minMatchID_PMR_num = %u \n", my_rank, minMatchID_PMR_num);
 
-        for(size_t i = 0; i < minMatchID_PMR_num; i=i+8){
-            if(i+8>=minMatchID_PMR_num){
+        for(size_t i = 0; i < minMatchID_PMR_num; i=i+512){
+            if(i+512>=minMatchID_PMR_num){
                 Multithreaded_search(i, minMatchID_PMR_num);
             } else {
-                Multithreaded_search(i, i+8);
+                Multithreaded_search(i, i+512);
             }
         }
         cout<<"initial tasks pushed"<<endl;
