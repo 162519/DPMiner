@@ -120,7 +120,7 @@ catch (...) {
                 bitmap->set(my_rank, vid, LOCAL);
             }
             std::lock_guard<std::mutex> lk(g_dataReadyMtx);
-            g_dataReadyCv.notify_all();
+            g_dataReadyCv.notify_one();
         }
     }
     catch (const std::exception& e) {

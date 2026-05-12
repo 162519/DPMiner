@@ -32,8 +32,8 @@ private:
     Response resp;
     global_degree gd;
 
-    std::atomic<unsigned long long> finalAns=0;
-    std::atomic<int> inFlightTasks_{0};
+    alignas(64) std::atomic<unsigned long long> finalAns=0;
+    alignas(64) std::atomic<int> inFlightTasks_{0};
     double precache_ratio_;
     ThreadSlot* computeThreadSlot_ = nullptr;
     ThreadSlot* mainThreadSlot_ = nullptr;
@@ -631,20 +631,12 @@ private:
         if (group_size > 0) {
             for (int j = 0; j < group_size; ++j) {
                 const auto& group = p->equivalent_group_schedule_final[index][j];
-                for (P_ID tmp_p : group) {
-                    vector<unsigned int> tmp;
-                    for(unsigned j2=0; j2 < nbr_len ; ++j2){
-                        R_ID tmpid = nbr_data[j2];
-                        if(isTraversed.test(tmpid) == 0){
-                            tmp.push_back(tmpid);
-                        }
-                    }
-                    if(tmp.size()==0){
-                        return false;
-                    }
-                    auto data_ptr = make_array_shared(tmp.size());
-                    std::memcpy(data_ptr.get(), tmp.data(), tmp.size() * sizeof(unsigned int));
-                    new_rows[tmp_p] = RowSlice(data_ptr, tmp.size());
+                if (group.size() <= 1) continue;
+                P_ID src_v = group[0];
+                const RowSlice& src_slice = new_rows[src_v];
+                if (src_slice.empty()) return false;
+                for (size_t k = 1; k < group.size(); ++k) {
+                    new_rows[group[k]] = src_slice;
                 }
             }
         }

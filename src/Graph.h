@@ -358,7 +358,8 @@ public:
       unsigned deg = degree_R[vid].deg;
       std::vector<unsigned> neighbors(buffer + neighbor_offset,
                                        buffer + neighbor_offset + deg);
-      sort(neighbors.begin(), neighbors.end());
+      // Data arrives pre-sorted from local_adj (sorted at Graph load time)
+      // sort(neighbors.begin(), neighbors.end()); — removed: redundant
       tbb::concurrent_hash_map<unsigned, std::vector<unsigned>>::accessor acc;
       remote_adjIndex.insert(acc, vid);
       acc->second = std::move(neighbors);

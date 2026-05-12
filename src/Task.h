@@ -8,8 +8,10 @@ struct TravSet {
     uint8_t  len = 0;
     void push(unsigned int v) { buf[len++] = v; }
     bool test(unsigned int v) const {
-        for (uint8_t i = 0; i < len; ++i) if (buf[i] == v) return true;
-        return false;
+        return (len >= 1 && buf[0] == v) ||
+               (len >= 2 && buf[1] == v) ||
+               (len >= 3 && buf[2] == v) ||
+               (len >= 4 && buf[3] == v);
     }
     TravSet clone() const { return *this; }
 };

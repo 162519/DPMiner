@@ -171,7 +171,7 @@ Graph *g;   // 数据图
 Cache *cache; //热点数据缓存
 
 LevelTaskQueues *levelQueues; //多层任务队列
-std::atomic<unsigned> totalTaskCount{0}; //总任务数量
+alignas(64) std::atomic<unsigned> totalTaskCount{0}; //总任务数量
 std::mutex g_dataReadyMtx; //数据就绪条件变量的互斥锁
 std::condition_variable g_dataReadyCv; //数据就绪通知
 int my_rank;
@@ -268,7 +268,7 @@ void getRemoteData(vector<unsigned>& batch){
             }
         }
         if(candidate_node.size() > 0){
-            int dest = candidate_node[rand() % candidate_node.size()];
+            int dest = candidate_node[vid % candidate_node.size()];
             destList[dest].push_back(vid);
             requestedVids.insert(vid);
         }
