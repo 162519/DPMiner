@@ -634,7 +634,6 @@ private:
                 if (group.size() <= 1) continue;
                 P_ID src_v = group[0];
                 const RowSlice& src_slice = new_rows[src_v];
-                if (src_slice.empty()) return false;
                 for (size_t k = 1; k < group.size(); ++k) {
                     new_rows[group[k]] = src_slice;
                 }
